@@ -1,0 +1,281 @@
+# -*- coding: utf-8 -*-
+import sqlite3
+
+DB_NAME = "students.db"
+
+
+def create_table():
+    """
+    데이터베이스 연결 및 테이블 생성
+    """
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS students (
+            student_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            score_eng INTEGER NOT NULL,
+            score_c INTEGER NOT NULL,
+            score_py INTEGER NOT NULL,
+            total INTEGER,
+            avg REAL,
+            grade TEXT,
+            rank INTEGER
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def calculate_grade(avg):
+    """
+    평균(avg)을 받아서 학점 반환
+    A: 90 이상
+    B+: 85 이상
+    B: 80 이상
+    C+: 75 이상
+    C: 70 이상
+    D: 60 이상
+    F: 그 외
+    """
+    if avg >= 90:
+        return "A"
+    elif avg >= 85:
+        return "B+"
+    elif avg >= 80:
+        return "B"
+    elif avg >= 75:
+        return "C+"
+    elif avg >= 70:
+        return "C"
+    elif avg >= 60:
+        return "D"
+    else:
+        return "F"
+
+
+def insert_student(student_id, name, eng, c_lang, py):
+    """
+    새로운 학생을 추가
+    1) 총점, 평균, 학점 계산
+    2) 테이블에 INSERT
+    3) 전체 등수 재계산
+    """
+    total = eng + c_lang + py
+    avg = total / 3
+    grade = calculate_grade(avg)
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO students (student_id, name, score_eng, score_c, score_py, total, avg, grade)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (student_id, name, eng, c_lang, py, total, avg, grade))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        print(f"[오류] 학번 {student_id}가 이미 존재합니다.")
+        conn.close()
+        return
+
+    conn.close()
+    update_ranks()  # 삽입 후 등수 업데이트
+
+
+def delete_student(student_id):
+    """
+    학번을 기준으로 학생 삭제
+    삭제 후 등수 재계산
+    """
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM students WHERE student_id = ?", (student_id,))
+    if cursor.rowcount == 0:
+        print(f"[알림] 학번 {student_id}에 해당하는 학생이 없습니다.")
+    else:
+        print(f"학번 {student_id} 학생을 삭제했습니다.")
+        conn.commit()
+        update_ranks()
+    conn.close()
+
+
+def search_by_id(student_id):
+    """
+    학번으로 조회
+    """
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM students WHERE student_id = ?", (student_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row  # 없으면 None, 있으면 (student_id, name, eng, c, py, total, avg, grade, rank)
+
+
+def search_by_name(name):
+    """
+    이름으로 조회 (부분일치 포함)
+    """
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM students WHERE name LIKE ?", ('%' + name + '%',))
+    rows = cursor.fetchall()
+    conn.close()
+    return rows  # 리스트 형태로 반환
+
+
+def update_ranks():
+    """
+    전체 학생의 총점 순으로 등수를 매겨서 rank 컬럼 업데이트
+    동점 처리: 같은 총점을 가진 학생에게 같은 등수 부여
+    """
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT student_id, total FROM students ORDER BY total DESC")
+    all_students = cursor.fetchall()  # [(student_id, total), ...]
+
+    current_rank = 0
+    prev_total = None
+    same_count = 0  # 같은 총점 학생 수
+    for idx, (sid, tot) in enumerate(all_students, start=1):
+        if tot != prev_total:
+            current_rank = idx
+            prev_total = tot
+            same_count = 1
+        else:
+            same_count += 1
+        cursor.execute("UPDATE students SET rank = ? WHERE student_id = ?", (current_rank, sid))
+
+    conn.commit()
+    conn.close()
+
+
+def get_all_sorted_by_total():
+    """
+    총점 내림차순으로 정렬된 전체 학생 리스트 반환
+    """
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM students ORDER BY total DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+def count_above_80():
+    """
+    평균이 80점 이상인 학생 수 반환
+    """
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM students WHERE avg >= 80")
+    cnt = cursor.fetchone()[0]
+    conn.close()
+    return cnt
+
+
+def input_students():
+    """
+    키보드로부터 n명의 학생 정보 입력받아 데이터베이스에 삽입
+    """
+    try:
+        n = int(input("등록할 학생 수(n)를 입력하세요: "))
+    except ValueError:
+        print("[오류] 올바른 정수를 입력하세요.")
+        return
+
+    for _ in range(n):
+        sid = input("학번: ").strip()
+        name = input("이름: ").strip()
+        try:
+            eng = int(input("영어 점수: "))
+            c_lang = int(input("C-언어 점수: "))
+            py = int(input("파이썬 점수: "))
+        except ValueError:
+            print("[오류] 점수는 정수로 입력해야 합니다. 해당 학생 입력을 건너뜁니다.")
+            continue
+
+        insert_student(sid, name, eng, c_lang, py)
+        print(f"학생 {name}({sid}) 추가 완료.\n")
+
+
+def print_student_row(row):
+    """
+    한 학생의 튜플(row)을 출력 형식에 맞춰서 보여줌
+    row: (student_id, name, eng, c, py, total, avg, grade, rank)
+    """
+    sid, name, eng, c_lang, py, total, avg, grade, rank = row
+    print(f"학번: {sid}\t이름: {name}\t영어: {eng}\tC언어: {c_lang}\t파이썬: {py}"
+          f"\t총점: {total}\t평균: {avg:.2f}\t학점: {grade}\t등수: {rank}")
+
+
+def print_all_students():
+    """
+    전체 학생을 화면에 출력
+    """
+    rows = get_all_sorted_by_total()
+    if not rows:
+        print("[알림] 등록된 학생이 없습니다.")
+        return
+
+    print("===== 전체 학생 목록 (총점 내림차순) =====")
+    for row in rows:
+        print_student_row(row)
+    print("=========================================")
+
+
+def menu():
+    """
+    사용자 메뉴를 보여주고 선택에 따라 함수 호출
+    """
+    while True:
+        print("\n===== 성적 관리 프로그램 메뉴 =====")
+        print("1. 학생 일괄 등록")
+        print("2. 전체 학생 출력")
+        print("3. 학번으로 검색")
+        print("4. 이름으로 검색")
+        print("5. 학생 삭제(학번)")
+        print("6. 총점 순 정렬하여 출력")
+        print("7. 평균 80점 이상 학생 수 확인")
+        print("8. 종료")
+        choice = input("메뉴 번호를 선택하세요: ").strip()
+
+        if choice == "1":
+            input_students()
+        elif choice == "2":
+            print_all_students()
+        elif choice == "3":
+            sid = input("검색할 학번을 입력하세요: ").strip()
+            row = search_by_id(sid)
+            if row:
+                print("---- 조회 결과 ----")
+                print_student_row(row)
+            else:
+                print(f"[알림] 학번 {sid}에 해당하는 학생이 없습니다.")
+        elif choice == "4":
+            name = input("검색할 이름(부분일치 가능)을 입력하세요: ").strip()
+            rows = search_by_name(name)
+            if rows:
+                print(f"---- 이름에 '{name}'가 포함된 학생 ({len(rows)}명) ----")
+                for row in rows:
+                    print_student_row(row)
+            else:
+                print(f"[알림] '{name}' 에 해당하는 학생이 없습니다.")
+        elif choice == "5":
+            sid = input("삭제할 학생의 학번을 입력하세요: ").strip()
+            delete_student(sid)
+        elif choice == "6":
+            print_all_students()
+        elif choice == "7":
+            cnt = count_above_80()
+            print(f"평균이 80점 이상인 학생 수: {cnt}명")
+        elif choice == "8":
+            print("프로그램을 종료합니다.")
+            break
+        else:
+            print("[오류] 올바른 메뉴 번호를 선택하세요.")
+
+
+if __name__ == "__main__":
+    # 프로그램 시작 시 테이블이 없으면 생성
+    create_table()
+    menu()
